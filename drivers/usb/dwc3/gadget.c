@@ -29,6 +29,9 @@
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+#include <linux/usb/composite.h>
+#endif
 #include <linux/usb/samsung_usb.h>
 #include <linux/phy/phy.h>
 
@@ -37,6 +40,59 @@
 #include "otg.h"
 #include "gadget.h"
 #include "io.h"
+#ifdef CONFIG_USBIRQ_BALANCING_LTE_HIGHTP
+#include <linux/netdevice.h>
+#include <linux/cpu.h>
+#include <linux/pm_qos.h>
+
+int irq_select_affinity_usr(unsigned int irq, struct cpumask *mask);
+
+static struct notifier_block rndis_notifier;
+static int gadget_irq = 0;
+#endif
+#define WORK_CANCEL(udc)
+#define WORK_SCHEDULE(udc)
+
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+static void dwc3_disconnect_gadget(struct dwc3 *dwc);
+static void dwc3_gadget_cable_connect(struct dwc3 *dwc, bool connect)
+{
+	static bool last_connect;
+	struct usb_composite_dev *cdev;
+	if (last_connect != connect) {
+		if (!connect){
+			cdev = get_gadget_data(&dwc->gadget);
+			if (cdev != NULL) {
+				cdev->mute_switch = 0;
+				cdev->force_disconnect = 1;
+				printk(KERN_DEBUG"Force Disconnect set to 1\n");
+			}
+		}
+		last_connect = connect;
+	}
+}
+#endif
+
+
+#ifdef CONFIG_ARGOS
+extern int argos_irq_affinity_setup_label(unsigned int irq, const char *label,
+                 struct cpumask *affinity_cpu_mask,
+                 struct cpumask *default_cpu_mask);
+#ifdef CONFIG_SCHED_HMP
+extern struct cpumask hmp_slow_cpu_mask;
+static inline struct cpumask *get_default_cpu_mask(void)
+{
+	return &hmp_slow_cpu_mask;
+}
+#else
+static inline struct cpumask *get_default_cpu_mask(void)
+{
+	return cpu_all_mask;
+}
+#endif
+cpumask_var_t affinity_cpu_mask;
+cpumask_var_t default_cpu_mask;
+#endif
 
 /**
  * ISR for DWC3 gadget was changed because of RNDIS performance.
@@ -351,7 +407,7 @@ int dwc3_send_gadget_ep_cmd(struct dwc3 *dwc, unsigned ep,
 static dma_addr_t dwc3_trb_dma_offset(struct dwc3_ep *dep,
 		struct dwc3_trb *trb)
 {
-	u32		offset = (char *) trb - (char *) dep->trb_pool;
+	size_t		offset = (char *) trb - (char *) dep->trb_pool;	/* prevent CID109377 */
 
 	return dep->trb_pool_dma + offset;
 }
@@ -926,8 +982,18 @@ static void dwc3_prepare_trbs(struct dwc3_ep *dep, bool starting)
 			if (list_is_last(&req->list, &dep->request_list))
 				last_one = 1;
 
-			dwc3_prepare_one_trb(dep, req, dma, length,
-					1, false, 0);
+			/*
+			To improve USB Tethering speed.
+			Last_one set on prepare trb has to set for ncm certification.
+			But It occurs to decrease USB Tethering throughput.
+			So, last_one set is on endpoint out state.
+			*/
+			if(usb_endpoint_dir_in(dep->endpoint.desc))
+				dwc3_prepare_one_trb(dep, req, dma, length,
+						last_one, false, 0);
+			else
+				dwc3_prepare_one_trb(dep, req, dma, length,
+						1, false, 0);
 
 			if (last_one)
 				break;
@@ -1156,6 +1222,31 @@ static int __dwc3_gadget_ep_queue(struct dwc3_ep *dep, struct dwc3_request *req)
 	return 0;
 }
 
+static void __dwc3_gadget_ep_zlp_complete(struct usb_ep *ep,struct usb_request *request)
+{
+         dwc3_gadget_ep_free_request(ep, request);
+}
+ 
+static int __dwc3_gadget_ep_queue_zlp(struct dwc3 *dwc, struct dwc3_ep *dep)
+{
+        struct dwc3_request             *req;
+        struct usb_request              *request;
+        struct usb_ep                   *ep = &dep->endpoint;
+ 
+        dev_vdbg(dwc->dev, "queing request ZLP \n");
+         request = dwc3_gadget_ep_alloc_request(ep, GFP_ATOMIC);
+         if (!request)
+                 return -ENOMEM;
+ 
+         request->length = 0;
+         request->buf = dwc->zlp_buf;
+         request->complete = __dwc3_gadget_ep_zlp_complete;
+ 
+         req = to_dwc3_request(request);
+ 
+         return __dwc3_gadget_ep_queue(dep, req);
+}
+
 static int dwc3_gadget_ep_queue(struct usb_ep *ep, struct usb_request *request,
 	gfp_t gfp_flags)
 {
@@ -1180,6 +1271,18 @@ static int dwc3_gadget_ep_queue(struct usb_ep *ep, struct usb_request *request,
 	trace_dwc3_ep_queue(req);
 
 	ret = __dwc3_gadget_ep_queue(dep, req);
+	
+ /*
+	 * Okay, here's the thing, if gadget driver has requested for a ZLP by
+	 * setting request->zero, instead of doing magic, we will just queue an
+	 * extra usb_request ourselves so that it gets handled the same way as
+	 * any other request.
+ */
+	if (ret == 0 && request->zero && request->length &&
+	   (request->length % ep->maxpacket == 0)) {
+	   ret = __dwc3_gadget_ep_queue_zlp(dwc, dep);
+	}
+
 	spin_unlock_irqrestore(&dwc->lock, flags);
 
 	return ret;
@@ -1606,6 +1709,8 @@ static int dwc3_gadget_run_stop(struct dwc3 *dwc, int is_on, int suspend)
 	u32			timeout = 500;
 	int			ret = 0;
 
+	printk(KERN_DEBUG"usb: %s is_on:%d\n",__func__, is_on);
+
 	if (is_on) {
 		dwc3_event_buffers_setup(dwc);
 		ret = dwc3_udc_init(dwc);
@@ -1714,6 +1819,12 @@ static int dwc3_gadget_vbus_session(struct usb_gadget *g, int is_active)
 							(void *)"USB_STATE=VBUS:EN:FAIL", NULL);
 #endif
 		} else {
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+			dwc3_gadget_cable_connect(dwc,false);
+			dwc->start_config_issued = false;
+			dwc->gadget.speed = USB_SPEED_UNKNOWN;
+			dwc->setup_packet_pending = false;
+#endif
 			ret = dwc3_gadget_run_stop(dwc, 0, false);
 
 #ifdef CONFIG_USB_NOTIFY_PROC_LOG
@@ -1723,6 +1834,9 @@ static int dwc3_gadget_vbus_session(struct usb_gadget *g, int is_active)
 			else
 				store_usblog_notify(NOTIFY_USBSTATE,
 							(void *)"USB_STATE=VBUS:DIS:FAIL", NULL);
+#endif
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+			dwc3_disconnect_gadget(dwc);
 #endif
 		}
 	}
@@ -1820,7 +1934,58 @@ static irqreturn_t dwc3_thread_interrupt(int irq, void *_dwc);
 #else
 static irqreturn_t dwc3_interrupt(int irq, void *_dwc);
 #endif
+#ifdef CONFIG_USBIRQ_BALANCING_LTE_HIGHTP
+static int set_cpu_core_from_usb_irq(int enable)
+{
+	int err = 0;
+	unsigned int irq = gadget_irq;
+	cpumask_var_t new_value;
 
+	if (!irq_can_set_affinity(irq))
+		return -EIO;
+
+	if (enable){
+		err = irq_set_affinity(irq, cpumask_of(1));
+	} else {
+
+		if (!alloc_cpumask_var(&new_value, GFP_KERNEL))
+			return -ENOMEM;
+
+		cpumask_setall(new_value);
+
+		if (!cpumask_intersects(new_value, cpu_online_mask)) {
+			err = irq_select_affinity_usr(irq, new_value);
+		} else {
+			err = irq_set_affinity(irq, new_value);
+		}
+		free_cpumask_var(new_value);
+	}
+
+	return err;
+}
+
+
+static int rndis_notify_callback(struct notifier_block *this,
+				unsigned long event, void *ptr)
+{
+	struct net_device *dev = ptr;
+
+	if (!net_eq(dev_net(dev), &init_net))
+		return NOTIFY_DONE;
+
+	if (!strncmp(dev->name, "rndis", 5)) {
+		switch (event) {
+		case NETDEV_UP:
+			set_cpu_core_from_usb_irq(true);
+			break;
+		case NETDEV_DOWN:
+			set_cpu_core_from_usb_irq(false);
+			break;
+		}
+	}
+	return NOTIFY_DONE;
+}
+#endif
 static int dwc3_gadget_start(struct usb_gadget *g,
 		struct usb_gadget_driver *driver)
 {
@@ -1852,6 +2017,23 @@ static int dwc3_gadget_start(struct usb_gadget *g,
 
 	spin_unlock_irqrestore(&dwc->lock, flags);
 
+#ifdef CONFIG_USBIRQ_BALANCING_LTE_HIGHTP
+	gadget_irq = irq;
+	rndis_notifier.notifier_call = rndis_notify_callback;
+	register_netdevice_notifier(&rndis_notifier);
+#endif
+
+#ifdef CONFIG_ARGOS
+	if (!zalloc_cpumask_var(&affinity_cpu_mask, GFP_KERNEL))
+		return -ENOMEM;
+	if (!zalloc_cpumask_var(&default_cpu_mask, GFP_KERNEL))
+		return -ENOMEM;
+
+	cpumask_copy(default_cpu_mask, get_default_cpu_mask());
+	cpumask_or(affinity_cpu_mask, affinity_cpu_mask, cpumask_of(3));
+	argos_irq_affinity_setup_label(irq, "USB", affinity_cpu_mask, default_cpu_mask);
+#endif
+
 	return 0;
 
 err1:
@@ -1882,6 +2064,9 @@ static int dwc3_gadget_stop(struct usb_gadget *g,
 
 	irq = platform_get_irq(to_platform_device(dwc->dev), 0);
 	free_irq(irq, dwc);
+#ifdef CONFIG_USBIRQ_BALANCING_LTE_HIGHTP
+	unregister_netdevice_notifier(&rndis_notifier);
+#endif
 
 	return 0;
 }
@@ -2113,6 +2298,14 @@ static int dwc3_cleanup_done_reqs(struct dwc3 *dwc, struct dwc3_ep *dep,
 		if (ret)
 			break;
 	} while (1);
+
+	/*  
+	* Our endpoint might get disabled by another thread during  
+	* dwc3_gadget_giveback(). If that happens, we're just gonna return 1  
+	* early on so DWC3_EP_BUSY flag gets cleared  
+	*/  
+	if (!dep->endpoint.desc)  
+		return 1;
 
 	if (usb_endpoint_xfer_isoc(dep->endpoint.desc) &&
 			list_empty(&dep->req_queued)) {
@@ -2773,6 +2966,9 @@ static void dwc3_gadget_interrupt(struct dwc3 *dwc,
 {
 	switch (event->type) {
 	case DWC3_DEVICE_EVENT_DISCONNECT:
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+		dwc3_gadget_cable_connect(dwc,false);
+#endif
 		printk(KERN_DEBUG"usb: %s DISCONNECT \n",__func__);
 		dwc3_gadget_disconnect_interrupt(dwc);
 		break;
@@ -2792,6 +2988,9 @@ static void dwc3_gadget_interrupt(struct dwc3 *dwc,
 #endif
 		break;
 	case DWC3_DEVICE_EVENT_CONNECT_DONE:
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+		dwc3_gadget_cable_connect(dwc,true);
+#endif
 		dwc3_gadget_conndone_interrupt(dwc);
 		break;
 	case DWC3_DEVICE_EVENT_WAKEUP:
@@ -2995,6 +3194,12 @@ int dwc3_gadget_init(struct dwc3 *dwc)
 		goto err3;
 	}
 
+	dwc->zlp_buf = kzalloc(DWC3_ZLP_BUF_SIZE, GFP_KERNEL);
+	if (!dwc->zlp_buf) {
+		ret = -ENOMEM;
+		goto err4;
+	}
+
 	dwc->gadget.ops			= &dwc3_gadget_ops;
 	dwc->gadget.max_speed		= dwc->maximum_speed;
 	dwc->gadget.speed		= USB_SPEED_UNKNOWN;
@@ -3036,6 +3241,7 @@ err5:
 	usb_del_gadget_udc(&dwc->gadget);
 err4:
 	dwc3_gadget_free_endpoints(dwc);
+	kfree(dwc->zlp_buf);
 	dma_free_coherent(dwc->dev, DWC3_EP0_BOUNCE_SIZE,
 			dwc->ep0_bounce, dwc->ep0_bounce_addr);
 
@@ -3069,6 +3275,7 @@ void dwc3_gadget_exit(struct dwc3 *dwc)
 			dwc->ep0_bounce, dwc->ep0_bounce_addr);
 
 	kfree(dwc->setup_buf);
+	kfree(dwc->zlp_buf);
 
 	dma_free_coherent(dwc->dev, sizeof(*dwc->ep0_trb),
 			dwc->ep0_trb, dwc->ep0_trb_addr);

@@ -378,7 +378,7 @@ static void __init request_standard_resources(void)
 	struct resource *res;
 
 	kernel_code.start   = virt_to_phys(_text);
-	kernel_code.end     = virt_to_phys(__init_begin - 1);
+	kernel_code.end     = virt_to_phys(_etext - 1);
 	kernel_data.start   = virt_to_phys(_sdata);
 	kernel_data.end     = virt_to_phys(_end - 1);
 
@@ -415,7 +415,6 @@ void __init setup_arch(char **cmdline_p)
 
 	*cmdline_p = boot_command_line;
 
-	early_fixmap_init();
 	early_ioremap_init();
 
 	parse_early_param();
@@ -432,7 +431,7 @@ void __init setup_arch(char **cmdline_p)
 	paging_init();
 	request_standard_resources();
 
-	efi_virtmap_init();
+	efi_idmap_init();
 	early_ioremap_reset();
 
 	unflatten_device_tree();

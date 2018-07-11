@@ -178,6 +178,10 @@ source "drivers/battery_v2/Kconfig"
 
 source "drivers/reset/Kconfig"
 
+source "drivers/sensorhub/stm/Kconfig"
+
+source "drivers/sensorhub/atmel/Kconfig"
+
 source "drivers/sensorhub/brcm/Kconfig"
 
 source "drivers/gps/Kconfig"

@@ -85,7 +85,10 @@ struct bio {
 	};
 
 	unsigned short		bi_vcnt;	/* how many bio_vec's */
-
+#if defined(CONFIG_MMC_DW_FMP_DM_CRYPT) || defined(CONFIG_UFS_FMP_DM_CRYPT)
+	unsigned int		bi_sensitive_data;
+	unsigned char		*disk_key;
+#endif
 	/*
 	 * Everything starting with bi_max_vecs will be preserved by bio_reset()
 	 */
@@ -122,13 +125,21 @@ struct bio {
 #define BIO_NULL_MAPPED 8	/* contains invalid user pages */
 #define BIO_QUIET	9	/* Make BIO Quiet */
 #define BIO_SNAP_STABLE	10	/* bio data must be snapshotted during write */
+#ifdef CONFIG_JOURNAL_DATA_TAG
+/* XXX Be carefull not to touch BIO_RESET_BITS */
+#define BIO_JOURNAL	11	/* bio contains journal data */
+#define BIO_JMETA	12	/* bio contains metadata */
+#define BIO_JOURNAL_TAG_MASK	((1UL << BIO_JOURNAL) | (1UL << BIO_JMETA))
+#endif
+
+#define BIO_BYPASS	13
 
 /*
  * Flags starting here get preserved by bio_reset() - this includes
  * BIO_POOL_IDX()
  */
-#define BIO_RESET_BITS	13
-#define BIO_OWNS_VEC	13	/* bio_free() should free bvec */
+#define BIO_RESET_BITS	14	/* should be larger then BIO_BYPASS */
+#define BIO_OWNS_VEC	14	/* bio_free() should free bvec */
 
 #define bio_flagged(bio, flag)	((bio)->bi_flags & (1 << (flag)))
 

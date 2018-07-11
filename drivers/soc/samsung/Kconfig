@@ -9,7 +9,6 @@ config EXYNOS_CHIPID
 	bool "Exynos Chip ID Driver Support"
 	depends on ARCH_EXYNOS
 	select SOC_BUS
-
 config EXYNOS_REBOOT
 	bool "Exynos Chip Reboot Driver Support"
 	depends on ARCH_EXYNOS
@@ -31,6 +30,12 @@ config ECT_DUMP
 	bool "Enable Exynos Characteristic Table File Dump sysfs"
 	default n
 	depends on ECT
+
+config EXYNOS_CONTENT_PATH_PROTECTION
+	bool "Exynos Content Path Protection"
+	default y
+	help
+	  Enable content path protection of EXYNOS.
 
 config EXYNOS_HOTPLUG_GOVERNOR
 	bool "Enable Exynos dynamic hotplug governor"

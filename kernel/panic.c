@@ -101,14 +101,22 @@ void panic(const char *fmt, ...)
 	 * stop themself or will wait until they are stopped by the 1st CPU
 	 * with smp_send_stop().
 	 */
-	if (!spin_trylock(&panic_lock))
+	if (!spin_trylock(&panic_lock)) {
+		exynos_ss_hook_hardlockup_exit();
 		panic_smp_self_stop();
+	}
 
 	console_verbose();
 	bust_spinlocks(1);
 	va_start(args, fmt);
 	vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
+
+#ifdef CONFIG_SEC_DEBUG_AUTO_SUMMARY
+	if(buf[strlen(buf)-1] == '\n')
+		buf[strlen(buf)-1] = '\0';
+#endif
+
 	pr_auto(ASL5, "Kernel panic - not syncing: %s\n", buf);
 
 #ifdef CONFIG_RELOCATABLE_KERNEL 
@@ -128,6 +136,7 @@ void panic(const char *fmt, ...)
 	if (!test_taint(TAINT_DIE) && oops_in_progress <= 1)
 		dump_stack();
 #endif
+
 	sysrq_sched_debug_show();
 	/*
 	 * If we have crashed and we have a crash kernel loaded let it handle

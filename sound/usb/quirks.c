@@ -163,7 +163,6 @@ static int create_fixed_stream_quirk(struct snd_usb_audio *chip,
 		err = -EINVAL;
 		goto error;
 	}
-
 	alts = &iface->altsetting[fp->altset_idx];
 	altsd = get_iface_desc(alts);
 	if (altsd->bNumEndpoints < 1) {

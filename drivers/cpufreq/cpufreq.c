@@ -29,6 +29,9 @@
 #include <linux/suspend.h>
 #include <linux/tick.h>
 #include <trace/events/power.h>
+#ifdef CONFIG_SEC_DUMP_SUMMARY
+#include <linux/sec_debug.h>
+#endif
 
 /**
  * The "cpufreq driver" - the arch- or hardware-dependent low
@@ -760,6 +763,32 @@ static struct attribute *default_attrs[] = {
 
 #define to_policy(k) container_of(k, struct cpufreq_policy, kobj)
 #define to_attr(a) container_of(a, struct freq_attr, attr)
+
+#ifdef CONFIG_SEC_BSP
+void get_cpuinfo_cur_freq(int *freq, int *online)
+{
+
+	int cpu;
+	int count = 0;
+	get_online_cpus();
+	*online=cpumask_bits(cpu_online_mask)[0];
+	for_each_online_cpu(cpu) {
+		struct cpufreq_policy *policy = per_cpu(cpufreq_cpu_data, cpu);
+		if(policy == 0)
+			break;
+		if(count == 2)
+			break;
+		if(count == 0 && cpu >=4)
+			count++;
+		if(count == 1 && cpu < 4)
+			continue;
+		freq[count] = policy->cur;
+		count++;
+
+	}
+	put_online_cpus();
+}
+#endif
 
 static ssize_t show(struct kobject *kobj, struct attribute *attr, char *buf)
 {
@@ -2245,7 +2274,6 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 
 	policy->min = new_policy->min;
 	policy->max = new_policy->max;
-	trace_cpu_frequency_limits(policy->max, policy->min, policy->cpu);
 
 	pr_debug("new min and max freqs are %u - %u kHz\n",
 		 policy->min, policy->max);
@@ -2591,6 +2619,30 @@ int cpufreq_unregister_driver(struct cpufreq_driver *driver)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(cpufreq_unregister_driver);
+
+#ifdef CONFIG_SEC_DUMP_SUMMARY
+int sec_debug_set_cpu_info(struct sec_debug_summary *summary_info, char *summary_log_buf)
+{
+	struct cpufreq_policy *data;
+	int i;
+	long val,size=0;
+
+	summary_info->kernel.cpu_info.cpu_offset_paddr = virt_to_phys(&__per_cpu_offset[0]);
+	summary_info->kernel.cpu_info.cpufreq_policy.paddr = virt_to_phys(summary_log_buf);
+
+	for(i=0;i<nr_cpu_ids;++i) {
+		data = per_cpu(cpufreq_cpu_data, i);
+		val = virt_to_phys(data);
+		memcpy(summary_log_buf+size,&val,sizeof(long)); size += sizeof(long);
+	}
+	summary_info->kernel.cpu_info.cpufreq_policy.name_length = CPUFREQ_NAME_LEN;
+	summary_info->kernel.cpu_info.cpufreq_policy.min_offset = offsetof(struct cpufreq_policy, min);
+	summary_info->kernel.cpu_info.cpufreq_policy.max_offset = offsetof(struct cpufreq_policy, max);
+	summary_info->kernel.cpu_info.cpufreq_policy.cur_offset = offsetof(struct cpufreq_policy, cur);
+
+	return size;
+}
+#endif
 
 static int __init cpufreq_core_init(void)
 {

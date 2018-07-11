@@ -29,7 +29,6 @@
 #include <linux/suspend.h>
 #include <linux/debugfs.h>
 
-
 #define MAX_WAKEUP_REASON_IRQS 32
 static int irq_list[MAX_WAKEUP_REASON_IRQS];
 static int irqcount;

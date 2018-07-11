@@ -22,6 +22,10 @@
 #include <linux/slab.h>
 #include <linux/sched_clock.h>
 
+#if defined(CONFIG_SEC_BSP)
+#include <linux/sec_bsp.h>
+#endif
+
 #include <asm/arch_timer.h>
 #include <asm/virt.h>
 
@@ -340,7 +344,10 @@ static void arch_counter_set_user_access(void)
 			| ARCH_TIMER_USR_PCT_ACCESS_EN);
 
 	/* Enable user access to the virtual counter */
-	cntkctl |= ARCH_TIMER_USR_VCT_ACCESS_EN;
+	if (IS_ENABLED(CONFIG_ARM_ARCH_TIMER_VCT_ACCESS))
+		cntkctl |= ARCH_TIMER_USR_VCT_ACCESS_EN;
+	else
+		cntkctl &= ~ARCH_TIMER_USR_VCT_ACCESS_EN;
 
 	arch_timer_set_cntkctl(cntkctl);
 }
@@ -727,6 +734,10 @@ static void __init arch_timer_init(struct device_node *np)
 	for (i = PHYS_SECURE_PPI; i < MAX_TIMER_PPI; i++)
 		arch_timer_ppi[i] = irq_of_parse_and_map(np, i);
 	arch_timer_detect_rate(NULL, np);
+
+#if defined(CONFIG_SEC_BSP)
+	sec_boot_stat_get_mct(arch_timer_rate);
+#endif
 
 	/* Exynos Specific Device Tree Information */
 	if (of_property_read_bool(np, "use-clocksource-only")) {

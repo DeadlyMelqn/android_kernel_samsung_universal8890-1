@@ -30,6 +30,9 @@
 #include <asm/thread_info.h>
 #include <asm/unistd.h>
 
+#ifdef CONFIG_RKP_CFP
+#include <asm/rkp_cfp.h>
+#endif
 /*
  * Context tracking subsystem.  Used to instrument transitions
  * between user and kernel mode.
@@ -55,6 +58,7 @@
 	bl	context_tracking_user_enter
 #endif
 	.endm
+
 
 /*
  * Bad Abort numbers
@@ -90,6 +94,11 @@
 	push	x22, x23
 	push	x20, x21
 	push	x18, x19
+#ifdef CONFIG_RKP_CFP_ROPP
+	.if	\el == 1
+	mov	RRK, xzr
+	.endif
+#endif
 	push	x16, x17
 	push	x14, x15
 	push	x12, x13
@@ -103,8 +112,32 @@
 	mrs	x21, sp_el0
 	get_thread_info tsk			// Ensure MDSCR_EL1.SS is clear,
 	ldr	x19, [tsk, #TI_FLAGS]		// since we can unmask debug
-	disable_step_tsk x19, x20		// exceptions when scheduling.
+#ifdef CONFIG_RKP_CFP_ROPP
+#ifdef CONFIG_RKP_CFP_ROPP_HYPKEY
+	push	x29, x30
+	push	x0, x1
+	mov	x0, #0x1000
+	movk	x0, #0x8389, lsl #16
+	mov	x1, tsk
+	add	x1, x1, #TI_RRK
+	bl	rkp_call
+	pop	x0, x1
+	pop	x29, x30
+#elif defined (CONFIG_RKP_CFP_ROPP_RANDOM_KEY)
+	mrs	RRK, CNTPCT_EL0
+	str	RRK, [tsk, #TI_RRK]
+#else
+	mov	RRK, #0
+	str	RRK, [tsk, #TI_RRK]
+#endif
+#endif
+        disable_step_tsk x19, x20		// exceptions when scheduling.
 	.else
+	/* From el1, don't change key as need for reencrypt*/
+#ifdef CONFIG_RKP_CFP_ROPP
+	get_thread_info tsk //Needed for load key
+	load_key 	tsk
+#endif
 	add	x21, sp, #S_FRAME_SIZE
 	.endif
 	mrs	x22, elr_el1
@@ -178,7 +211,18 @@
 	pop	x10, x11
 	pop	x12, x13
 	pop	x14, x15
+#ifdef CONFIG_RKP_CFP_ROPP
+	.if	\el == 1
+	/* Might be having an interrupt right after smc call, before any RRK loading code */
+	ldr		x16, [sp], #16
+	get_thread_info x19
+	load_key 	x19 
+	.else
+	pop	x16, RRK
+	.endif
+#else
 	pop	x16, x17
+#endif
 	pop	x18, x19
 	pop	x20, x21
 	pop	x22, x23
@@ -193,10 +237,13 @@
 	eret					// return to kernel
 	.endm
 
+#ifndef CONFIG_RKP_CFP_ROPP
+	/* Move to arch/arm64/include/asm/assembler.h (need it in head.S for loading key on CPU boot).*/
 	.macro	get_thread_info, rd
 	mov	\rd, sp
 	and	\rd, \rd, #~(THREAD_SIZE - 1)	// top of stack
 	.endm
+#endif
 
 /*
  * These are the registers used in the syscall handler, and allow us to
@@ -226,7 +273,11 @@ tsk	.req	x28		// current thread_info
  */
 
 	.align	11
+#ifdef CONFIG_RKP_CFP_JOPP
+VECTOR_ENTRY(vectors)
+#else
 ENTRY(vectors)
+#endif
 	ventry	el1_sync_invalid		// Synchronous EL1t
 	ventry	el1_irq_invalid			// IRQ EL1t
 	ventry	el1_fiq_invalid			// FIQ EL1t
@@ -259,7 +310,7 @@ END(vectors)
  * Invalid mode handlers
  */
 	.macro	inv_entry, el, reason, regsize = 64
-	kernel_entry el, \regsize
+	kernel_entry \el, \regsize
 	mov	x0, sp
 	mov	x1, #\reason
 	mrs	x2, esr_el1
@@ -446,7 +497,7 @@ el0_sync:
 	cmp	x24, #ESR_EL1_EC_FP_EXC64	// FP/ASIMD exception
 	b.eq	el0_fpsimd_exc
 	cmp	x24, #ESR_EL1_EC_SYS64		// configurable trap
-	b.eq	el0_undef
+	b.eq	el0_sys
 	cmp	x24, #ESR_EL1_EC_SP_ALIGN	// stack alignment exception
 	b.eq	el0_sp_pc
 	cmp	x24, #ESR_EL1_EC_PC_ALIGN	// pc alignment exception
@@ -571,6 +622,16 @@ el0_undef:
 	mov	x0, sp
 	bl	do_undefinstr
 	b	ret_to_user
+el0_sys:
+	/*
+	 * System instructions, for trapped cache maintenance instructions
+	 */
+	enable_dbg_and_irq
+	ct_user_exit
+	mov	x0, x25
+	mov	x1, sp
+	bl	do_sysinstr
+	b	ret_to_user
 el0_dbg:
 	/*
 	 * Debug exception handling
@@ -638,6 +699,12 @@ ENTRY(cpu_switch_to)
 	ldp	x29, x9, [x8], #16
 	ldr	lr, [x8]
 	mov	sp, x9
+#ifdef CONFIG_RKP_CFP_ROPP
+	push		x27, x28
+	get_thread_info tsk
+	load_key	tsk
+	pop		x27, x28
+#endif
 	ret
 ENDPROC(cpu_switch_to)
 

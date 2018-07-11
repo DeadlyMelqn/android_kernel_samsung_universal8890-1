@@ -17,6 +17,7 @@
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
 #include <linux/exynos-ss.h>
+
 #include "internal.h"
 
 static DEFINE_MUTEX(pmsg_lock);

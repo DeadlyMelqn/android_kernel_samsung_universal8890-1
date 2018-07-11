@@ -256,7 +256,7 @@ int dwc3_exynos_vbus_event(struct device *dev, bool vbus_active)
 	struct dwc3_exynos_rsw	*rsw;
 	struct otg_fsm		*fsm;
 
-	dev_dbg(dev, "EVENT: VBUS: %sactive\n", vbus_active ? "" : "in");
+	dev_info(dev, "EVENT: VBUS: %sactive\n", vbus_active ? "" : "in");
 
 	exynos = dev_get_drvdata(dev);
 	if (!exynos)
@@ -791,9 +791,9 @@ static int dwc3_exynos_runtime_suspend(struct device *dev)
 	struct dwc3_exynos *exynos = dev_get_drvdata(dev);
 
 #ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-	dev_info(dev, "%s\n", __func__);
+		dev_info(dev, "%s\n", __func__);
 #else
-	dev_dbg(dev, "%s\n", __func__);
+		dev_dbg(dev, "%s\n", __func__);
 #endif
 
 	dwc3_exynos_clk_disable(exynos);
@@ -815,9 +815,9 @@ static int dwc3_exynos_runtime_resume(struct device *dev)
 	int ret = 0;
 
 #ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-	dev_info(dev, "%s\n", __func__);
+		dev_info(dev, "%s\n", __func__);
 #else
-	dev_dbg(dev, "%s\n", __func__);
+		dev_dbg(dev, "%s\n", __func__);
 #endif
 
 #ifdef CONFIG_PM_DEVFREQ

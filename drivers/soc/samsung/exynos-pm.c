@@ -28,8 +28,8 @@
 #endif
 
 #define EXYNOS8890_PA_GPIO_ALIVE	0x10580000
-#define WAKEUP_STAT_EINT                (1 << 0)
-#define WAKEUP_STAT_RTC_ALARM           (1 << 1)
+#define WAKEUP_STAT_EINT		(1 << 0)
+#define WAKEUP_STAT_RTC_ALARM		(1 << 1)
 #define WAKEUP_STAT_INT_MBOX		(1 << 24)
 
 /*

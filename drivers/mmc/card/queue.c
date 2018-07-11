@@ -20,7 +20,6 @@
 #include <linux/version.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
-#include <linux/sched/rt.h>
 #include "queue.h"
 
 #define MMC_QUEUE_BOUNCESZ	65536
@@ -52,11 +51,6 @@ static int mmc_queue_thread(void *d)
 {
 	struct mmc_queue *mq = d;
 	struct request_queue *q = mq->queue;
-	struct sched_param scheduler_params = {0};
-
-	scheduler_params.sched_priority = 1;
-
-	sched_setscheduler(current, SCHED_FIFO, &scheduler_params);
 
 	current->flags |= PF_MEMALLOC;
 
@@ -68,7 +62,12 @@ static int mmc_queue_thread(void *d)
 
 		spin_lock_irq(q->queue_lock);
 		set_current_state(TASK_INTERRUPTIBLE);
-		req = blk_fetch_request(q);
+		if (mq->mqrq_prev->req &&
+				(mq->card && (mq->card->type == MMC_TYPE_SD) &&
+				mq->card->host->pm_progress))
+			req = NULL;
+		else
+			req = blk_fetch_request(q);
 		mq->mqrq_cur->req = req;
 		spin_unlock_irq(q->queue_lock);
 
@@ -297,6 +296,15 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card,
 
 	mq->thread = kthread_run(mmc_queue_thread, mq, "mmcqd/%d%s",
 		host->index, subname ? subname : "");
+
+#ifdef CONFIG_LARGE_DIRTY_BUFFER
+	if (mmc_card_sd(card)) {
+		/* apply more throttle on external sdcard */
+		mq->queue->backing_dev_info.max_ratio = 10;
+		mq->queue->backing_dev_info.min_ratio = 10;
+		mq->queue->backing_dev_info.capabilities |= BDI_CAP_STRICTLIMIT;
+	}
+#endif
 
 	if (IS_ERR(mq->thread)) {
 		ret = PTR_ERR(mq->thread);

@@ -344,6 +344,7 @@ int decon_pan_display(struct fb_var_screeninfo *var, struct fb_info *info)
 			decon->state == DECON_STATE_OFF) {
 		decon_warn("%s: decon%d state(%d), UNBLANK missed\n",
 				__func__, decon->id, decon->state);
+		return 0;
 	}
 
 	decon_set_par(info);
@@ -777,7 +778,11 @@ static void decon_lpd_handler(struct work_struct *work)
 	if (!decon || !decon->lpd_init_status)
 		return;
 
+#ifdef CONFIG_DECON_SELF_REFRESH
+	if (decon_lpd_enter_cond(decon) && !decon->dsr_on)
+#else
 	if (decon_lpd_enter_cond(decon))
+#endif
 		decon_enter_lpd(decon);
 }
 
